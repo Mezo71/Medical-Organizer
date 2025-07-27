@@ -1,0 +1,20 @@
+
+export const testDictionary = {
+  A1C: "Measures average blood sugar over 3 months.",
+  CBC: "Complete blood count.",
+  HCT: 'Hematocrit - red blood cell volume',
+  MCH: 'Mean corpuscular hemoglobin',
+  HDL: 'High-density lipoprotein (good cholesterol)',
+  LDL: 'Low-density lipoprotein (bad cholesterol)',
+  ALT: 'Liver enzyme (Alanine transaminase)',
+  AST: 'Liver enzyme (Aspartate transaminase)',
+  TSH: 'Thyroid stimulating hormone',
+  CRP: 'C-reactive protein (inflammation marker)',
+  WBC: 'White blood cell count',
+  RBC: 'Red blood cell count',
+  LFT: "Assesses liver function.",
+  KFT: "Checks kidney filtration.",
+  CREATININE: "Measures kidney waste product.",
+  GLUCOSE: "Measures blood sugar.",
+  VITAMIN: "Checks vitamin levels.",
+};
