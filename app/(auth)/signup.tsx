@@ -49,6 +49,10 @@ export default function Signup() {
 
   return (
     <View style={styles.container}>
+      <Pressable onPress={() => router.back()} style={styles.backButton}>
+                    <Text style={styles.backButtonText}>← Back</Text>
+                  </Pressable>
+            
       <Text style={styles.title}>Sign Up</Text>
 
       <TextInput
@@ -116,4 +120,14 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     marginBottom: 12,
   },
+   backButton: {
+    marginBottom: 15, alignSelf: 'flex-start', backgroundColor: '#ccc',
+    paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8
+  },
+  backButtonText: { color: '#333', fontWeight: 'bold' },
+  categoryScroll: { marginBottom: 20, flexDirection: 'row' },
+  categoryButton: {
+    paddingHorizontal: 15, paddingVertical: 8, backgroundColor: '#f0f0f0',
+    borderRadius: 20, marginRight: 10,
+  }
 });

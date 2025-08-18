@@ -1,5 +1,4 @@
 // testDictionary.ts — canonical keys, aliases, ranges, units,
-// borderline status, OCR decimal-fix, and CENTRALIZED notes.
 
 type Range = { min: number; max: number; unit: string };
 
@@ -7,6 +6,7 @@ type Range = { min: number; max: number; unit: string };
 export const testDictionary: Record<string, string> = {
   // CBC Core
   HGB: "Hemoglobin",
+  HEMOGLOBIN: "Hemoglobin",
   HCT: "Hematocrit (aka PCV)",
   RBC: "Red Blood Cell count",
   WBC: "White Blood Cell count",
@@ -46,27 +46,37 @@ export const testDictionary: Record<string, string> = {
 
 // ===== Aliases (normalize OCR → canonical) =====
 export const testAliases: Record<string, string> = {
+  // Hemoglobin
   HB: "HGB",
   HEMOGLOBIN: "HGB",
   HEMOGLOBINHB: "HGB",
+  HGBH: "HGB",
 
+  // Hematocrit
   HEMATOCRIT: "HCT",
   PCV: "HCT",
   PACKEDCELLVOLUME: "HCT",
 
+  // RBC
   RBCCOUNT: "RBC",
   TOTALRBC: "RBC",
+  RBCC: "RBC",
 
+  // WBC (incl. verbose lab lines)
   WBCCOUNT: "WBC",
   TOTALWBC: "WBC",
   TOTALCOUNTWBC: "WBC",
+  TOTALCOUNTWBCEDTABLOOD: "WBC",
+  TOTALCOUNT: "WBC", // if it appears near "(WBC)" the resolver below also catches it
 
+  // RDW
   RDW: "RDWCV",
   "RDW-CV": "RDWCV",
-  "RDWCV": "RDWCV",
+  RDWCV: "RDWCV",
   "RDW-SD": "RDWSD",
-  "RDWSD": "RDWSD",
+  RDWSD: "RDWSD",
 
+  // Platelets
   PLATELETCOUNT: "PLT",
   PLATELETS: "PLT",
   PLTCOUNT: "PLT",
@@ -86,47 +96,61 @@ export const testAliases: Record<string, string> = {
   // Diff Abs aliases
   NEUTROPHILSABSOLUTE: "NEUTROPHILSABS",
   NEUTABS: "NEUTROPHILSABS",
+  ABSNEUTROPHILS: "NEUTROPHILSABS",
   LYMPHOCYTESABSOLUTE: "LYMPHOCYTESABS",
   LYMPHABS: "LYMPHOCYTESABS",
+  ABSLYMPHOCYTES: "LYMPHOCYTESABS",
   MONOCYTESABSOLUTE: "MONOCYTESABS",
   MONOABS: "MONOCYTESABS",
+  ABSMONOCYTES: "MONOCYTESABS",
   EOSINOPHILSABSOLUTE: "EOSINOPHILSABS",
   EOSABS: "EOSINOPHILSABS",
+  ABSEOSINOPHILS: "EOSINOPHILSABS",
   BASOPHILSABSOLUTE: "BASOPHILSABS",
   BASOABS: "BASOPHILSABS",
+  ABSBASOPHILS: "BASOPHILSABS",
 };
 
 // ===== Key resolver =====
 export function resolveKey(rawName: string): string | null {
+  if (!rawName) return null;
   const k = rawName.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  // direct hits
   if (testDictionary[k]) return k;
   if (testAliases[k]) return testAliases[k];
+
+  // contains-based fallback (for verbose lab labels like "TOTAL COUNT (WBC), EDTA blood")
   for (const key of Object.keys(testDictionary)) {
     if (k.includes(key)) return key;
   }
   for (const [alias, canonical] of Object.entries(testAliases)) {
     if (k.includes(alias)) return canonical;
   }
+
+  // special: "TOTALCOUNT" appearing next to "(WBC)"
+  if (/\bWBC\b/i.test(rawName) && /TOTAL/i.test(rawName)) return "WBC";
+
   return null;
 }
 
-// ===== Units =====
+// ===== Units (canonical target units for display) =====
 export const getUnit = (label: string): string => {
   const u = resolveKey(label) ?? label.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
   // Percent-type
-  if (["NEUTROPHILS", "LYMPHOCYTES", "MONOCYTES", "EOSINOPHILS", "BASOPHILS", "HCT", "RDWCV", "PCT", "PDW"].includes(u))
+  if (["NEUTROPHILS","HEMOGLOBIN", "LYMPHOCYTES", "MONOCYTES", "EOSINOPHILS", "BASOPHILS", "HCT", "RDWCV", "PCT", "PDW"].includes(u))
     return "%";
 
   // g/dL
   if (u === "HGB" || u === "MCHC") return "g/dL";
-
+  if (u ==="HEMOGLOBIN") return "g/dL";
   // fL / pg
   if (u === "MCV") return "fL";
   if (u === "MCH") return "pg";
   if (u === "RDWSD" || u === "MPV") return "fL";
 
-  // counts
+  // counts (canonicalize to x10^9/L)
   if (u === "WBC" || u === "PLT" || u.endsWith("ABS")) return "x10^9/L";
 
   // metabolic
@@ -140,9 +164,82 @@ export const getUnit = (label: string): string => {
   return "";
 };
 
+// ===== Input unit normalization & safe conversion =====
+
+// شائعة في التقارير: million/cmm ، 10^3/µL ، 10^9/L ، g/dL ، fL ، pg ، % ...
+const unitCanonicalMap: Record<string, string> = {
+  "%": "%",
+  "PERCENT": "%",
+
+  "G/DL": "g/dL",
+  "G DL": "g/dL",
+  "GPERDL": "g/dL",
+  "GPDL": "g/dL",
+  "GDL": "g/dL",
+
+  "FL": "fL",
+  "F L": "fL",
+
+  "PG": "pg",
+
+  // counts
+  "X10^9/L": "x10^9/L",
+  "10^9/L": "x10^9/L",
+  "X10^3/UL": "x10^9/L",   // numerically identical scale when value is given in thousands/µL
+  "10^3/UL": "x10^9/L",
+  "K/UL": "x10^9/L",
+
+  // RBC specific legacy
+  "MILLION/CMM": "x10^12/L", // numerically identical to millions/µL
+  "M/UL": "x10^12/L",
+};
+
+function normalizeRawUnit(rawUnit?: string): string | null {
+  if (!rawUnit) return null;
+  const u = rawUnit.toUpperCase().replace(/[^A-Z0-9^/]/g, "");
+  return unitCanonicalMap[u] ?? null;
+}
+
+/**
+ * يحوّل قيمة بوحدةٍ مُدخلة (من التقرير) إلى الوحدة المعيارية التي نعرضها.
+ * ملاحظة: في معظم عدّادات الدم، المقاييس شائعة تكون مكافئة عدديًا:
+ *  - WBC/PLT: 10^3/µL ↔ 10^9/L  (القيمة نفسها)
+ *  - RBC: million/µL ↔ 10^12/L   (القيمة نفسها)
+ */
+export function convertToCanonical(
+  testName: string,
+  value: number,
+  rawUnit?: string
+): { value: number; unit: string } {
+  const key = resolveKey(testName) ?? testName.toUpperCase();
+  const targetUnit = getUnit(key);
+  const given = normalizeRawUnit(rawUnit);
+
+  if (!given || !targetUnit || !isFinite(value)) {
+    return { value, unit: targetUnit || (rawUnit ?? "") };
+  }
+
+  // قواعد بسيطة: المقاييس المذكورة أعلاه متكافئة عدديًا
+  if (key === "WBC" || key === "PLT" || key.endsWith("ABS")) {
+    // treat 10^3/µL and 10^9/L as same numeric scale
+    return { value, unit: "x10^9/L" };
+  }
+  if (key === "RBC") {
+    // treat million/µL and 10^12/L as same numeric scale
+    return { value, unit: "x10^12/L" };
+  }
+
+  // بالنسبة لباقي الاختبارات: إن كانت الوحدة المدخلة تساوي الهدف، نُعيدها كما هي
+  if (given === targetUnit) return { value, unit: targetUnit };
+
+  // لا تحويلات إضافية مطلوبة الآن
+  return { value, unit: targetUnit };
+}
+
 // ===== Ranges (simple adult references) =====
 export const testRanges: Record<string, Range> = {
   HGB:   { min: 12.0, max: 17.5, unit: "g/dL" },
+  Hemoglobin:   { min: 12.0, max: 17.5, unit: "g/dL" },
   HCT:   { min: 36.0, max: 50.0, unit: "%"  },
   RBC:   { min: 4.2,  max: 6.1,  unit: "x10^12/L" },
   WBC:   { min: 4.0,  max: 11.0, unit: "x10^9/L"  },
@@ -232,49 +329,43 @@ export function fitToRangeMagnitude(testName: string, rawValue: number): number 
 }
 
 // ===== CENTRALIZED notes =====
-// ملاحظات مخصّصة لبعض التحاليل حسب الحالة
 const specificNotes: Record<string, Partial<Record<RangeStatus, string>>> = {
   RDWCV: {
-    "High": "High RDW may indicate mixed anemia — check MCV and MCH.",
+    High: "High RDW may indicate mixed anemia — check MCV and MCH.",
     "Borderline High": "RDW near upper limit — review with MCV/MCH.",
   },
   RDWSD: {
-    "High": "High RDW-SD may suggest anisocytosis — correlate clinically.",
+    High: "High RDW-SD may suggest anisocytosis — correlate clinically.",
     "Borderline High": "RDW-SD near upper limit — correlate with RDW-CV.",
   },
   WBC: {
-    "High": "High WBC may indicate infection/inflammation — evaluate clinically.",
-    "Low": "Low WBC — repeat and review medications/symptoms if persistent.",
+    High: "High WBC may indicate infection/inflammation — evaluate clinically.",
+    Low: "Low WBC — repeat and review medications/symptoms if persistent.",
   },
   RBC: {
-    "Low": "Low RBC — consider iron/B12 workup if symptoms are present.",
+    Low: "Low RBC — consider iron/B12 workup if symptoms are present.",
     "Borderline Low": "RBC near lower limit — monitor and correlate with HGB/HCT.",
   },
   A1C: {
-    "High": "A1C is high — discuss the plan with your doctor and repeat in ~3 months.",
+    High: "A1C is high — discuss the plan with your doctor and repeat in ~3 months.",
     "Borderline High": "A1C near upper limit — lifestyle review and follow-up.",
   },
 };
 
-// ملاحظات عامة تُستخدم عندما لا توجد ملاحظة مخصّصة
+// ملاحظات عامة
 const genericNotes: Partial<Record<RangeStatus, string>> = {
-  "High": "The result is above the normal range — follow up with your doctor.",
+  High: "The result is above the normal range — follow up with your doctor.",
   "Borderline High": "The result is close to the upper limit — consider retesting and monitoring.",
-  "Low": "The result is below the normal range — follow up with your doctor.",
+  Low: "The result is below the normal range — follow up with your doctor.",
   "Borderline Low": "The result is close to the lower limit — monitor symptoms and retest.",
-  "Unknown": "No reference range is currently available for this test.",
-  // "Normal": "Within the normal range." // فعّلها لو تريد ملاحظة لحالة Normal
+  Unknown: "No reference range is currently available for this test.",
 };
 
-// دالة واحدة تُستخدم من بقية الصفحات لإحضار الملاحظة
+// دالة واحدة تُستخدم لإحضار الملاحظة
 export function getNote(testName: string, status: RangeStatus): string | null {
-  if (status === "Normal") return null; // غيّرها لو تبغى تُظهر نصًّا للـ Normal
+  if (status === "Normal") return null;
   const key = resolveKey(testName) ?? testName.toUpperCase();
-
-  // ملاحظة مخصّصة إن وجدت
   const fromSpecific = specificNotes[key]?.[status];
   if (fromSpecific) return fromSpecific;
-
-  // وإلا ملاحظة عامة حسب الحالة
   return genericNotes[status] ?? null;
 }

@@ -4,7 +4,7 @@ const cors = require('cors');
 const Tesseract = require('tesseract.js');
 const fs = require('fs');
 
-const app = express(); // ⬅️ هذا هو السطر اللي كان ناقص عندك
+const app = express(); 
 const upload = multer({ dest: 'uploads/' });
 
 app.use(cors());

@@ -10,7 +10,7 @@ export const extractTextFromImage = async (uri: string): Promise<string[]> => {
       type,
     } as any);
 
-    const response = await fetch('http://192.168.68.103:5001/ocr', {
+    const response = await fetch('http://192.168.1.46:5001/ocr', {
       method: 'POST',
       body: formData,
       headers: {
@@ -21,7 +21,7 @@ export const extractTextFromImage = async (uri: string): Promise<string[]> => {
     const data = await response.json();
     console.log('OCR Response:', data);
 
-    return data.texts ? data.texts : []; // ✅ يجب أن تكون texts وليس imageId
+    return data.texts ? data.texts : []; 
   } catch (error) {
     console.error('OCR Error:', error);
     return [];

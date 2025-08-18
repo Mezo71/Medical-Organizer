@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, TextInput, Pressable,
   Image, Alert, Platform, ScrollView
@@ -7,10 +7,24 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { db } from '../lib/firebase';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
 import { extractTextFromImage } from '../../utils/ocr';
-import { testDictionary } from '../../testDictionary';
+
+// === bring  metadata from  dictionary ===
+import {
+  testDictionary,
+  resolveKey,
+  getUnit,
+  testRanges,
+  getRangeStatus,
+  getNote,
+  fitToRangeMagnitude,
+  RangeStatus,
+} from '../../testDictionary';
+
+type ExtractedMap = Record<string, string>;
+
+const CATEGORIES = ['Blood', 'Urine', 'X-Ray', 'MRI', 'Other'];
 
 export default function EditTest() {
   const { id } = useLocalSearchParams();
@@ -21,27 +35,83 @@ export default function EditTest() {
   const [date, setDate] = useState(new Date());
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [extractedValues, setExtractedValues] = useState<Record<string, string>>({});
+  const [extractedValues, setExtractedValues] = useState<ExtractedMap>({});
+  const [saving, setSaving] = useState(false);
 
-  const categories = ['Blood', 'Urine', 'X-Ray', 'MRI', 'Other'];
-
+  // ---------- helpers ----------
   const getCategoryFromName = (name: string): string => {
     const upper = name.toUpperCase();
-    if (upper.includes('A1C') || upper.includes('GLU') || upper.includes('GLUCOSE')) return 'Blood';
-    if (upper.includes('TSH')) return 'Thyroid';
-    if (upper.includes('LFT')) return 'Liver';
-    if (upper.includes('KFT') || upper.includes('CREATININE')) return 'Kidney';
-    if (upper.includes('VITAMIN')) return 'Vitamin';
+    if (upper.includes('CBC') || upper.includes('HGB') || upper.includes('GLU') || upper.includes('A1C')) return 'Blood';
+    if (upper.includes('TSH') || upper.includes('THY')) return 'Blood';
+    if (upper.includes('CREAT') || upper.includes('KFT') || upper.includes('KIDNEY')) return 'Blood';
     return 'Other';
   };
 
-  const getUnit = (label: string): string => {
-    const upper = label.toUpperCase();
-    if (upper.includes('A1C')) return '%';
-    if (upper.includes('GLU') || upper.includes('GLUCOSE') || upper.includes('VITAMIN') || upper.includes('IRON')) return 'mg/dL';
-    if (upper.includes('TSH')) return 'mIU/L';
-    if (upper.includes('CREATININE')) return 'mg/dL';
-    return '';
+  const numeric = (s: any): number | null => {
+    if (s == null) return null;
+    const n = Number(String(s).replace(/[^0-9.+-]/g, ''));
+    return Number.isFinite(n) ? n : null;
+  };
+
+  // Make a normalized list of results with metadata (name, unit, range, status, note)
+  const rows = useMemo(() => {
+    const out: Array<{
+      originalKey: string;
+      canonical: string;
+      displayName: string;
+      unit: string;
+      valueRaw: string;
+      valueNum: number | null;
+      valueFixed: number | null;
+      range?: { min: number; max: number; unit: string };
+      status: RangeStatus;
+      note: string | null;
+    }> = [];
+
+    for (const [k, v] of Object.entries(extractedValues)) {
+      const canonical = resolveKey(k) ?? k.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const displayName = testDictionary[canonical] ?? k;
+      const unit = getUnit(canonical);
+      const range = testRanges[canonical];
+
+      const valueNum = numeric(v);
+      // correct OCR decimal if we know the range
+      const valueFixed = valueNum != null && range ? fitToRangeMagnitude(canonical, valueNum) : valueNum;
+
+      const status =
+        valueFixed != null && range
+          ? getRangeStatus(canonical, valueFixed, { borderlinePct: 5 })
+          : 'Unknown';
+
+      const note = getNote(canonical, status);
+
+      out.push({
+        originalKey: k,
+        canonical,
+        displayName,
+        unit,
+        valueRaw: String(v),
+        valueNum,
+        valueFixed,
+        range,
+        status,
+        note,
+      });
+    }
+
+    out.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    return out;
+  }, [extractedValues]);
+
+  const statusColor = (s: RangeStatus): string => {
+    switch (s) {
+      case 'Low': return '#e53935';
+      case 'Borderline Low': return '#fb8c00';
+      case 'Normal': return '#43a047';
+      case 'Borderline High': return '#fb8c00';
+      case 'High': return '#e53935';
+      default: return '#9e9e9e';
+    }
   };
 
   useEffect(() => {
@@ -50,10 +120,10 @@ export default function EditTest() {
       const docRef = doc(db, 'medicalTests', String(id));
       const docSnap = await getDoc(docRef);
       if (docSnap.exists()) {
-        const data = docSnap.data();
+        const data = docSnap.data() as any;
         setTestName(data.name || '');
         setCategory(data.category || '');
-        setDate(new Date(data.date));
+        setDate(data.date ? new Date(data.date) : new Date());
         setImageUri(data.imageUri || null);
         setExtractedValues(data.extractedValues || {});
       } else {
@@ -65,6 +135,7 @@ export default function EditTest() {
     fetchTest();
   }, [id]);
 
+  // ---------- actions ----------
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
@@ -81,21 +152,27 @@ export default function EditTest() {
       const uri = result.assets[0].uri;
       setImageUri(uri);
 
-      const texts = await extractTextFromImage(uri);
-      const extracted: Record<string, string> = { ...extractedValues }; // منع التكرار
+      try {
+        const texts = await extractTextFromImage(uri);
+        const next: Record<string, string> = { ...extractedValues };
 
-      texts.forEach((text) => {
-        const match = text.match(/([A-Z0-9]+)\s*=?\s*([0-9.]+)/);
-        if (match) {
-          const key = match[1];
-          const value = match[2];
-          if (!extracted[key]) {
-            extracted[key] = value;
+        texts.forEach((text) => {
+          // Loose pattern like: "Hemoglobin 10.0 g/dL" or "HGB = 10.0"
+          const m = text.match(/([A-Za-z0-9%\-\/\s()]+?)\s*[:=]?\s*([0-9.]+)\b/);
+          if (m) {
+            const rawKey = m[1].trim();
+            const value = m[2];
+            const canonical = resolveKey(rawKey) ?? rawKey.toUpperCase().replace(/[^A-Z0-9]/g, '');
+            // canonical key in storage to unify later usage
+            if (!next[canonical]) next[canonical] = value;
           }
-        }
-      });
+        });
 
-      setExtractedValues(extracted);
+        setExtractedValues(next);
+      } catch (e) {
+        console.error('OCR error', e);
+        Alert.alert('OCR Error', 'Failed to read the image.');
+      }
     }
   };
 
@@ -106,6 +183,7 @@ export default function EditTest() {
     }
 
     try {
+      setSaving(true);
       await updateDoc(doc(db, 'medicalTests', String(id)), {
         name: testName,
         category,
@@ -120,16 +198,17 @@ export default function EditTest() {
     } catch (error) {
       console.error('Save Error:', error);
       Alert.alert('Error', 'Failed to update test.');
+    } finally {
+      setSaving(false);
     }
   };
-  
 
+  // ---------- render ----------
   return (
-    
     <ScrollView contentContainerStyle={styles.container}>
       <Pressable onPress={() => router.back()} style={{ marginBottom: 10 }}>
-  <Text style={{ color: '#007AFF', fontSize: 16 }}>← Back</Text>
-</Pressable>
+        <Text style={{ color: '#007AFF', fontSize: 16 }}>← Back</Text>
+      </Pressable>
 
       <Text style={styles.title}>Edit Medical Test</Text>
 
@@ -139,28 +218,20 @@ export default function EditTest() {
         value={testName}
         onChangeText={(text) => {
           setTestName(text);
-          setCategory(getCategoryFromName(text)); // تحليل ذكي للاسم
+          setCategory(getCategoryFromName(text));
         }}
         placeholder="Enter test name"
       />
 
       <Text style={styles.label}>Category</Text>
-      <ScrollView horizontal style={styles.categoryScroll}>
-        {categories.map((cat, index) => (
+      <ScrollView horizontal style={styles.categoryScroll} showsHorizontalScrollIndicator={false}>
+        {CATEGORIES.map((cat) => (
           <Pressable
-            key={index}
-            style={[
-              styles.categoryButton,
-              category === cat && styles.categoryButtonSelected
-            ]}
+            key={cat}
+            style={[styles.categoryButton, category === cat && styles.categoryButtonSelected]}
             onPress={() => setCategory(cat)}
           >
-            <Text
-              style={[
-                styles.categoryText,
-                category === cat && styles.categoryTextSelected
-              ]}
-            >
+            <Text style={[styles.categoryText, category === cat && styles.categoryTextSelected]}>
               {cat}
             </Text>
           </Pressable>
@@ -192,31 +263,54 @@ export default function EditTest() {
 
       {imageUri && <Image source={{ uri: imageUri }} style={styles.previewImage} />}
 
-      {Object.keys(extractedValues).length > 0 && (
+      /* ----- Results with ranges/status/notes ----- */
+      {rows.length > 0 && (
         <View style={styles.extractedBox}>
           <Text style={styles.sectionTitle}>🧪 Extracted Results</Text>
-          {Object.entries(extractedValues).map(([key, value]) => (
-            <View key={key} style={styles.resultGroup}>
-              <Text style={styles.resultLabel}>{key} Result</Text>
-              <TextInput
-                style={styles.resultInput}
-                value={String(value)}
-                keyboardType="numeric"
-                onChangeText={(text) =>
-                  setExtractedValues((prev) => ({
-                    ...prev,
-                    [key]: text
-                  }))
-                }
-              />
-              <Text style={styles.unitText}>{getUnit(key)}</Text>
+
+          {rows.map((r) => (
+            <View key={r.originalKey} style={styles.resultCard}>
+              <View style={styles.resultHeader}>
+                <Text style={styles.resultName}>{r.displayName}</Text>
+                <View style={[styles.badge, { backgroundColor: statusColor(r.status) }]}>
+                  <Text style={styles.badgeText}>{r.status}</Text>
+                </View>
+              </View>
+
+              <Text style={styles.keyLine}>Key: {r.canonical}</Text>
+
+              <View style={styles.valueRow}>
+                <TextInput
+                  style={styles.valueInput}
+                  keyboardType="numeric"
+                  value={String(extractedValues[r.canonical] ?? r.valueRaw)}
+                  onChangeText={(text) =>
+                    setExtractedValues((prev) => ({
+                      ...prev,
+                      // store by canonical to keep things clean
+                      [r.canonical]: text,
+                    }))
+                  }
+                />
+                {!!r.unit && <Text style={styles.unitBubble}>{r.unit}</Text>}
+              </View>
+
+              {!!r.range && (
+                <Text style={styles.rangeText}>
+                  Reference: {r.range.min} – {r.range.max} {r.range.unit}
+                </Text>
+              )}
+
+              {!!r.note && (
+                <Text style={styles.noteText}>{r.note}</Text>
+              )}
             </View>
           ))}
         </View>
       )}
 
-      <Pressable style={styles.saveButton} onPress={handleSave}>
-        <Text style={styles.saveButtonText}>Save Changes</Text>
+      <Pressable style={[styles.saveButton, saving && { opacity: 0.6 }]} onPress={handleSave} disabled={saving}>
+        <Text style={styles.saveButtonText}>{saving ? 'Saving…' : 'Save Changes'}</Text>
       </Pressable>
     </ScrollView>
   );
@@ -230,10 +324,15 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#ccc', borderRadius: 8,
     padding: 12, marginBottom: 20,
   },
+
+  // date
   dateButton: {
     padding: 12, borderWidth: 1, borderColor: '#ccc',
     borderRadius: 8, marginBottom: 20,
+    alignItems: 'center',
   },
+
+  // image
   imageButton: {
     backgroundColor: '#eee', padding: 12,
     borderRadius: 8, alignItems: 'center', marginBottom: 10,
@@ -243,64 +342,70 @@ const styles = StyleSheet.create({
     width: '100%', height: 200,
     borderRadius: 8, marginBottom: 20,
   },
-  saveButton: {
-    backgroundColor: '#1e90ff', padding: 15,
-    borderRadius: 8, alignItems: 'center',
-    marginTop: 20,
-  },
-  saveButtonText: {
-    color: '#fff', fontWeight: 'bold',
-  },
-  categoryScroll: {
-    marginBottom: 20,
-    flexDirection: 'row',
-  },
+
+  // categories
+  categoryScroll: { marginBottom: 20, flexDirection: 'row' },
   categoryButton: {
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 20,
-    marginRight: 10,
+    paddingHorizontal: 15, paddingVertical: 8,
+    backgroundColor: '#f0f0f0', borderRadius: 20, marginRight: 10,
   },
-  categoryButtonSelected: {
-    backgroundColor: '#007AFF',
-  },
-  categoryText: {
-    color: '#555',
-    fontWeight: '500',
-  },
-  categoryTextSelected: {
-    color: '#fff',
-  },
+  categoryButtonSelected: { backgroundColor: '#007AFF' },
+  categoryText: { color: '#555', fontWeight: '500' },
+  categoryTextSelected: { color: '#fff' },
+
+  // extracted results
   extractedBox: {
     backgroundColor: '#f5faff',
     padding: 12,
     borderRadius: 8,
     marginTop: 10,
   },
-  sectionTitle: {
-    fontWeight: 'bold',
-    fontSize: 16,
-    marginBottom: 10,
-  },
-  resultGroup: {
+  sectionTitle: { fontWeight: 'bold', fontSize: 16, marginBottom: 10 },
+
+  resultCard: {
+    backgroundColor: '#fff',
+    borderWidth: 1, borderColor: '#e5efff',
+    borderRadius: 10,
+    padding: 12,
     marginBottom: 12,
   },
-  resultLabel: {
-    fontWeight: '600',
-    marginBottom: 4,
+  resultHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
   },
-  resultInput: {
+  resultName: { fontWeight: '700', fontSize: 16, color: '#102a43' },
+  badge: {
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12,
+  },
+  badgeText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+
+  keyLine: { color: '#66788a', marginBottom: 6 },
+
+  valueRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  valueInput: {
+    flex: 1,
+    borderWidth: 1, borderColor: '#ccc',
+    borderRadius: 8, padding: 10, backgroundColor: '#fff',
+  },
+  unitBubble: {
+    backgroundColor: '#eef3ff',
+    borderColor: '#cfd9ff',
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
-    padding: 10,
-    backgroundColor: '#fff',
-    marginBottom: 4,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 14,
+    color: '#1b2a4e',
+    overflow: 'hidden',
   },
-  unitText: {
-    fontSize: 12,
-    color: '#555',
-    marginLeft: 4,
+  rangeText: { marginTop: 6, color: '#334e68' },
+  noteText: { marginTop: 4, color: '#6b7280', fontStyle: 'italic' },
+
+  // save
+  saveButton: {
+    backgroundColor: '#1e90ff', padding: 15,
+    borderRadius: 8, alignItems: 'center',
+    marginTop: 20,
   },
+  saveButtonText: { color: '#fff', fontWeight: 'bold' },
 });

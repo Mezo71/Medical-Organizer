@@ -1,3 +1,6 @@
+// app/AddManualTest.tsx
+
+
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, Platform, TextInput,
@@ -93,7 +96,6 @@ function extractValuesUsingDictionary(textJoined: string, linesUpper: string[]):
 
 function countOccurrences(textUpper: string, key: string): number {
   const k = key.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  // treat as a token; OCR text is already uppercased and de-noised
   const re = new RegExp(`\\b${k}\\b`, 'g');
   return (textUpper.match(re) || []).length;
 }
@@ -108,20 +110,18 @@ function chooseBestSuggestion(
   const explicitCBC = /\bCBC\b/.test(textJoinedUpper);
   const coreHits = CBC_CORE.filter(k => extracted[k]).length;
 
-  // ✅ pick CBC only if explicitly mentioned OR enough core items exist
   if (explicitCBC || coreHits >= 4) {
     return { name: 'CBC', category: 'Blood' };
   }
 
-  // Otherwise, score other keys and choose the best
   let best: string | null = null;
   let bestScore = -Infinity;
 
   for (const key of foundKeys) {
     let score = 0;
-    if (extracted[key]) score += 3; // has a numeric value
-    score += countOccurrences(textJoinedUpper, key); // name appears count
-    if (key.length >= 4) score += 0.5; // tiny bias for longer, clearer keys
+    if (extracted[key]) score += 3;
+    score += countOccurrences(textJoinedUpper, key);
+    if (key.length >= 4) score += 0.5;
 
     if (score > bestScore) {
       bestScore = score;
@@ -130,6 +130,12 @@ function chooseBestSuggestion(
   }
 
   return best ? { name: best } : null;
+}
+
+/* helper: was this test detected in image text? */
+function isDetected(key: string, suggestions: string[]) {
+  const up = key.toUpperCase();
+  return suggestions.some(s => s.toUpperCase() === up);
 }
 
 /* ===========================
@@ -153,37 +159,23 @@ export default function AddManualTest() {
 
   const categories = ['Blood', 'Urine', 'X-Ray', 'MRI', 'Other'];
 
-  const pickImage = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission denied', 'You must allow gallery access.');
-      return;
-    }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 1,
-    });
-
-    if (result.canceled || !result.assets?.length) return;
-
-    const uri = result.assets[0].uri;
+  // ---------- gallery & camera ----------
+  const processImage = async (uri: string) => {
     setImageUri(uri);
-
     setLoading(true);
     try {
       const rawOcr = await extractTextFromImage(uri);
       const ocrTexts: string[] = normalizeOcr(rawOcr);
 
       const linesUpper = ocrTexts.map(t => String(t).toUpperCase());
-      const textJoined = linesUpper.join(' ').replace(/\s+/g, ' ').trim(); // already UPPER from linesUpper
+      const textJoined = linesUpper.join(' ').replace(/\s+/g, ' ').trim();
 
-      // detect keys present in text
+      // detect keys present in text (UPPER keys)
       const dictKeysUpper = Array.from(DICT_KEYS_UPPER);
       const foundKeys = dictKeysUpper.filter(k => textJoined.includes(k));
       setSuggestions(foundKeys);
 
-      // extract values and auto-fix decimals based on expected magnitude
+      // extract values and auto-fix decimals as expected 
       const values = extractValuesUsingDictionary(textJoined, linesUpper);
       const corrected: Record<string, string> = {};
       for (const [k, v] of Object.entries(values)) {
@@ -193,7 +185,7 @@ export default function AddManualTest() {
       }
       setExtractedValues(corrected);
 
-      // 🔎 intelligent choice for test name (avoid always picking CBC)
+      // Suggestion for test name
       const choice = chooseBestSuggestion(foundKeys, corrected, textJoined);
       if (choice) {
         setTestName(choice.name);
@@ -203,7 +195,6 @@ export default function AddManualTest() {
           : null
         );
       } else if (foundKeys.length > 0) {
-        // simple fallback
         setTestName(foundKeys[0]);
       }
     } catch (err) {
@@ -211,6 +202,39 @@ export default function AddManualTest() {
       Alert.alert('OCR Error', 'Failed to extract values from image.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ---------- Gallery ----------
+  const pickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission denied', 'You must allow gallery access.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 1,
+      allowsEditing: true,
+    });
+    if (!result.canceled && result.assets?.length) {
+      await processImage(result.assets[0].uri);
+    }
+  };
+
+  // ---------- Camera ----------
+  const takePhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission denied', 'You must allow camera access.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      quality: 1,
+    });
+    if (!result.canceled && result.assets?.length) {
+      await processImage(result.assets[0].uri);
     }
   };
 
@@ -226,14 +250,14 @@ export default function AddManualTest() {
         type: `image/${fileType}`,
       } as any);
 
-      const response = await fetch('http://192.168.68.110:5000/upload', {
+      const response = await fetch('http://192.168.1.46:5000/upload', {
         method: 'POST',
         body: formData,
         headers: { 'Content-Type': 'multipart/form-data' },
       });
 
       const data = await response.json();
-      return `http://192.168.68.110:5000/image/${data.imageId}`;
+      return `http://192.168.1.46:5000/image/${data.imageId}`;
     } catch (error) {
       console.error('Image upload failed:', error);
       return null;
@@ -258,7 +282,7 @@ export default function AddManualTest() {
         }
       }
 
-      // Build status/unit/note maps (notes come only from dictionary helpers)
+      // Build status/unit/note maps
       const resultStatusMap: Record<string, string> = {};
       const unitsMap: Record<string, string> = {};
       const notesMap: Record<string, string> = {};
@@ -282,7 +306,7 @@ export default function AddManualTest() {
         suggestions,
         extractedValues,
 
-        // new:
+        // new maps:
         resultStatusMap,
         unitsMap,
         notesMap,
@@ -360,15 +384,19 @@ export default function AddManualTest() {
         />
       )}
 
-      <Pressable style={styles.imageButton} onPress={pickImage}>
-        <Text style={styles.imageButtonText}>
-          {imageUri ? 'Change Image' : 'Select Image'}
-        </Text>
-      </Pressable>
+      {/* Image controls: Gallery + Camera */}
+      <View style={styles.imageButtonsRow}>
+        <Pressable style={[styles.imageButton, { backgroundColor: '#2d6cdf' }]} onPress={pickImage}>
+          <Text style={styles.imageButtonText}>{imageUri ? 'Change Image' : 'Select Image'}</Text>
+        </Pressable>
+        <Pressable style={[styles.imageButton, { backgroundColor: '#1b929aff' }]} onPress={takePhoto}>
+          <Text style={styles.imageButtonText}>📷 Camera</Text>
+        </Pressable>
+      </View>
 
       {imageUri && <Image source={{ uri: imageUri }} style={styles.previewImage} />}
 
-      {loading && <ActivityIndicator size="large" />}
+      {loading && <ActivityIndicator size="large" style={{ marginVertical: 8 }} />}
 
       {Object.keys(extractedValues).length > 0 && (
         <View style={styles.extractedBox}>
@@ -379,9 +407,8 @@ export default function AddManualTest() {
             const status = getRangeStatus(key, isFinite(num) ? num : NaN, { borderlinePct: 5 });
             const unit = getUnit(key);
             const note = getNote(key, status);
-
-            // Debug (optional)
-            console.log('NOTE DEBUG', { key, status, resolved: resolveKey(key), note });
+            const description = (testDictionary as any)[key] as string | undefined; // description from dictionary
+            const detected = isDetected(key, suggestions);
 
             return (
               <View key={key} style={{ marginBottom: 12 }}>
@@ -397,28 +424,57 @@ export default function AddManualTest() {
                   <Text style={styles.badgeText}>{status}</Text>
                 </View>
                 {unit ? <Text style={{ color: '#666', fontSize: 12 }}>Unit: {unit}</Text> : null}
-                {note ? <Text style={{ color: '#6b7280', fontSize: 12, marginTop: 4 }}>{note}</Text> : null}
+
+                {description ? (
+                  <Text style={{ color: '#6b7280', fontSize: 12, marginTop: 4 }}>
+                    {description}
+                  </Text>
+                ) : null}
+
+                {detected ? (
+                  <View
+                    style={{
+                      alignSelf: 'flex-start',
+                      backgroundColor: '#e5e7eb',
+                      paddingHorizontal: 8,
+                      paddingVertical: 3,
+                      borderRadius: 10,
+                      marginTop: 6,
+                    }}
+                  >
+                    <Text style={{ color: '#374151', fontSize: 11 }}>Detected in image</Text>
+                  </View>
+                ) : null}
+
+                {note ? (
+                  <Text style={{ color: '#6b7280', fontSize: 12, marginTop: 4 }}>
+                    {note}
+                  </Text>
+                ) : null}
               </View>
             );
           })}
         </View>
       )}
 
-      {suggestions.length > 0 && (
+      {/* Suggestions with no values yet */}
+      {suggestions.filter(s => !extractedValues[s]).length > 0 && (
         <View style={{ marginBottom: 20 }}>
-          <Text style={{ fontWeight: 'bold', marginBottom: 8 }}>Suggestions from image:</Text>
-          {suggestions.map((word, index) => (
-            <Pressable
-              key={index}
-              onPress={() => setTestName(word)}
-              style={{ backgroundColor: '#f0f0f0', padding: 10, borderRadius: 8, marginBottom: 6 }}
-            >
-              <Text style={{ fontWeight: '600' }}>{word}</Text>
-              <Text style={{ color: '#666', fontSize: 12 }}>
-                {(testDictionary as any)[word] || 'No info available'}
-              </Text>
-            </Pressable>
-          ))}
+          <Text style={{ fontWeight: 'bold', marginBottom: 8 }}>Other suggestions:</Text>
+          {suggestions
+            .filter(s => !extractedValues[s])
+            .map((word, index) => (
+              <Pressable
+                key={index}
+                onPress={() => setTestName(word)}
+                style={{ backgroundColor: '#f0f0f0', padding: 10, borderRadius: 8, marginBottom: 6 }}
+              >
+                <Text style={{ fontWeight: '600' }}>{word}</Text>
+                <Text style={{ color: '#666', fontSize: 12 }}>
+                  {(testDictionary as any)[word] || 'No info available'}
+                </Text>
+              </Pressable>
+            ))}
         </View>
       )}
 
@@ -441,7 +497,7 @@ export default function AddManualTest() {
         </View>
       )}
 
-      <Pressable style={styles.submitButton} onPress={handleAddTest}>
+      <Pressable style={styles.submitButton} onPress={handleAddTest} disabled={loading}>
         <Text style={styles.submitText}>Save Test</Text>
       </Pressable>
     </ScrollView>
@@ -458,6 +514,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8
   },
   backButtonText: { color: '#333', fontWeight: 'bold' },
+
   categoryScroll: { marginBottom: 20, flexDirection: 'row' },
   categoryButton: {
     paddingHorizontal: 15, paddingVertical: 8, backgroundColor: '#f0f0f0',
@@ -466,12 +523,18 @@ const styles = StyleSheet.create({
   categoryButtonSelected: { backgroundColor: '#007AFF' },
   categoryText: { color: '#555', fontWeight: '500' },
   categoryTextSelected: { color: '#fff' },
-  dateButton: { padding: 12, borderWidth: 1, borderColor: '#ccc', borderRadius: 8, marginBottom: 20 },
-  imageButton: { backgroundColor: '#eee', padding: 12, borderRadius: 8, alignItems: 'center', marginBottom: 10 },
-  imageButtonText: { fontWeight: '500', color: '#007AFF' },
-  previewImage: { width: '100%', height: 200, borderRadius: 8, marginBottom: 20 },
+
+  dateButton: { padding: 12, borderWidth: 1, borderColor: '#ccc', borderRadius: 8, marginBottom: 16 },
+
+  imageButtonsRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  imageButton: { flex: 1, padding: 12, borderRadius: 8, alignItems: 'center' },
+  imageButtonText: { color: '#fff', fontWeight: '700' },
+
+  previewImage: { width: '100%', height: 200, borderRadius: 8, marginBottom: 12 },
+
   submitButton: { backgroundColor: '#1e90ff', padding: 15, borderRadius: 8, alignItems: 'center', marginTop: 8 },
   submitText: { color: '#fff', fontWeight: 'bold' },
+
   ocrBox: {
     backgroundColor: '#f9f9f9', padding: 12, borderRadius: 8, marginBottom: 20,
     borderWidth: 1, borderColor: '#ccc',
@@ -483,7 +546,8 @@ const styles = StyleSheet.create({
     borderRadius: 6, alignSelf: 'flex-start',
   },
   useSuggestionText: { color: '#fff', fontWeight: '600' },
-  extractedBox: { backgroundColor: '#f1f8ff', padding: 12, borderRadius: 8, marginBottom: 20 },
+
+  extractedBox: { backgroundColor: '#f1f8ff', padding: 12, borderRadius: 8, marginBottom: 16 },
   extractedTitle: { fontWeight: 'bold', color: '#007AFF', marginBottom: 6 },
   extractedInput: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10, marginTop: 4 },
 
@@ -492,7 +556,7 @@ const styles = StyleSheet.create({
   badgeText: { color: '#fff', fontWeight: '700', fontSize: 12 },
 });
 
-// badge colors incl. Borderline
+// badge colors 
 function badgeColor(status: string) {
   if (status === 'Normal') return { backgroundColor: '#16a34a' };            // green
   if (status === 'Low')    return { backgroundColor: '#2563eb' };            // blue

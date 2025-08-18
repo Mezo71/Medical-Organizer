@@ -4,7 +4,7 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyBAn-UcLJugfnMg67nHI49hncU__3l_-ns", // لا تغير القيم هنا، فقط كمّله
+  apiKey: "AIzaSyBAn-UcLJugfnMg67nHI49hncU__3l_-ns", 
   authDomain: "medical-test-organizer-app.firebaseapp.com",
   projectId: "medical-test-organizer-app",
   storageBucket: "medical-test-organizer-app.appspot.com",
@@ -17,7 +17,7 @@ const app = initializeApp(firebaseConfig);
 
 const auth = getAuth(app);
 const db = getFirestore(app);
-const storage = getStorage(app); // ← تأكد أنه موجود هنا
+const storage = getStorage(app); 
 
 export { auth, db, storage };
 export { firebaseConfig };
